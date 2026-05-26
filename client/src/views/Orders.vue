@@ -27,6 +27,39 @@
         </div>
       </div>
 
+      <!-- Submitted Orders: only shown when restock orders have been placed -->
+      <div v-if="submittedOrders.length > 0" class="card">
+        <div class="card-header">
+          <h3 class="card-title">Submitted Orders ({{ submittedOrders.length }})</h3>
+        </div>
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Order #</th>
+                <th>Submitted</th>
+                <th>Items</th>
+                <th>Status</th>
+                <th>Lead Time</th>
+                <th>Expected Delivery</th>
+                <th>Total Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="order in submittedOrders" :key="order.id">
+                <td><strong>{{ order.order_number }}</strong></td>
+                <td>{{ formatDate(order.submitted_at) }}</td>
+                <td class="submitted-items-cell">{{ order.items.map(i => `${i.name} (${i.quantity})`).join(', ') }}</td>
+                <td><span class="badge info">{{ order.status }}</span></td>
+                <td>{{ order.lead_time_days }} days</td>
+                <td>{{ formatDate(order.expected_delivery) }}</td>
+                <td><strong>${{ order.total_cost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">{{ t('orders.allOrders') }} ({{ orders.length }})</h3>
@@ -95,6 +128,7 @@ export default {
     const loading = ref(true)
     const error = ref(null)
     const orders = ref([])
+    const submittedOrders = ref([])
 
     // Use shared filters
     const {
@@ -121,6 +155,16 @@ export default {
         error.value = 'Failed to load orders: ' + err.message
       } finally {
         loading.value = false
+      }
+    }
+
+    // Submitted orders are not filtered — fetched once on mount only
+    const loadSubmittedOrders = async () => {
+      try {
+        submittedOrders.value = await api.getSubmittedOrders()
+      } catch (err) {
+        // Non-fatal: submitted orders section is hidden when empty
+        console.error('Failed to load submitted orders:', err)
       }
     }
 
@@ -153,13 +197,17 @@ export default {
       })
     }
 
-    onMounted(loadOrders)
+    onMounted(() => {
+      loadOrders()
+      loadSubmittedOrders()
+    })
 
     return {
       t,
       loading,
       error,
       orders,
+      submittedOrders,
       getOrdersByStatus,
       getOrderStatusClass,
       formatDate,
@@ -275,5 +323,13 @@ export default {
 .item-meta {
   font-size: 0.813rem;
   color: #64748b;
+}
+
+/* Keep the comma-joined items list from overflowing its column */
+.submitted-items-cell {
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

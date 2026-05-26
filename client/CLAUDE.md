@@ -337,6 +337,7 @@ watchDebounced(
 - ❌ Heavy computations in methods instead of computed
 - ❌ Not handling loading/error states
 - ❌ Mixing Composition API and Options API in same component
+- ❌ Leaving non-obvious logic changes uncommented
 
 **Do:**
 - ✅ Use unique IDs for keys
@@ -345,6 +346,7 @@ watchDebounced(
 - ✅ Use computed properties for derived data
 - ✅ Always show loading and error states
 - ✅ Stick to Composition API throughout project
+- ✅ Always document non-obvious logic changes with a brief comment explaining the *why* (constraints, workarounds, ordering requirements, domain rules)
 
 ### API Integration
 

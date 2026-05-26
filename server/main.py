@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
+from datetime import datetime, timedelta
 from mock_data import inventory_items, orders, demand_forecasts, backlog_items, spending_summary, monthly_spending, category_spending, recent_transactions, purchase_orders
 
 app = FastAPI(title="Factory Inventory Management System")
@@ -13,6 +14,21 @@ QUARTER_MAP = {
     'Q3-2025': ['2025-07', '2025-08', '2025-09'],
     'Q4-2025': ['2025-10', '2025-11', '2025-12']
 }
+
+# Supplier lead time per category (business days). Used to compute expected_delivery
+# for restocking orders. "Other" is the fallback when an item's category isn't mapped.
+CATEGORY_LEAD_TIMES = {
+    'Circuit Boards':  14,
+    'Sensors':         10,
+    'Actuators':       18,
+    'Controllers':     21,
+    'Power Supplies':  12,
+    'Other':           14,
+}
+
+# In-memory store of orders submitted via the Restocking tab. Cleared on every restart,
+# consistent with the rest of the mock-data layer.
+submitted_orders: list = []
 
 def filter_by_month(items: list, month: Optional[str]) -> list:
     """Filter items by month/quarter based on order_date field"""
@@ -120,6 +136,37 @@ class CreatePurchaseOrderRequest(BaseModel):
     expected_delivery_date: str
     notes: Optional[str] = None
 
+class RestockLineItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+
+class SubmitRestockRequest(BaseModel):
+    budget: float
+    items: List[RestockLineItem]
+
+class SubmittedOrderItem(BaseModel):
+    sku: str
+    name: str
+    category: str
+    quantity: int
+    unit_cost: float
+    line_total: float
+    lead_time_days: int
+
+class SubmittedOrder(BaseModel):
+    id: str
+    order_number: str
+    items: List[SubmittedOrderItem]
+    total_cost: float
+    budget: float
+    submitted_at: str
+    status: str
+    lead_time_days: int
+    expected_delivery: str
+
 # API endpoints
 @app.get("/")
 def root():
@@ -152,6 +199,63 @@ def get_orders(
     filtered_orders = apply_filters(orders, warehouse, category, status)
     filtered_orders = filter_by_month(filtered_orders, month)
     return filtered_orders
+
+# Restocking routes are registered BEFORE the dynamic /api/orders/{order_id} so that
+# "submitted" and "restock" aren't captured as order IDs.
+@app.post("/api/orders/restock", response_model=SubmittedOrder)
+def submit_restock_order(payload: SubmitRestockRequest):
+    if not payload.items:
+        raise HTTPException(status_code=400, detail="At least one line item is required")
+
+    submitted_items: List[dict] = []
+    total_cost = 0.0
+    max_lead = 0
+
+    for line in payload.items:
+        if line.quantity <= 0:
+            raise HTTPException(status_code=400, detail=f"Quantity must be positive for SKU {line.sku}")
+        lead = CATEGORY_LEAD_TIMES.get(line.category, CATEGORY_LEAD_TIMES['Other'])
+        line_total = round(line.quantity * line.unit_cost, 2)
+        total_cost += line_total
+        # Track the slowest line so the order-level expected_delivery reflects the
+        # last item to arrive — buyers care about when the whole order is fulfilled.
+        if lead > max_lead:
+            max_lead = lead
+        submitted_items.append({
+            "sku": line.sku,
+            "name": line.name,
+            "category": line.category,
+            "quantity": line.quantity,
+            "unit_cost": line.unit_cost,
+            "line_total": line_total,
+            "lead_time_days": lead,
+        })
+
+    total_cost = round(total_cost, 2)
+    if total_cost > payload.budget:
+        raise HTTPException(status_code=400, detail=f"Order total {total_cost} exceeds budget {payload.budget}")
+
+    now = datetime.utcnow()
+    new_id = str(len(submitted_orders) + 1)
+    order_number = f"RST-{now.year}-{(len(submitted_orders) + 1):04d}"
+    order = {
+        "id": new_id,
+        "order_number": order_number,
+        "items": submitted_items,
+        "total_cost": total_cost,
+        "budget": payload.budget,
+        "submitted_at": now.isoformat(timespec='seconds'),
+        "status": "Submitted",
+        "lead_time_days": max_lead,
+        "expected_delivery": (now + timedelta(days=max_lead)).date().isoformat(),
+    }
+    submitted_orders.append(order)
+    return order
+
+@app.get("/api/orders/submitted", response_model=List[SubmittedOrder])
+def list_submitted_orders():
+    # Newest first — buyers expect their just-submitted order to appear at the top.
+    return list(reversed(submitted_orders))
 
 @app.get("/api/orders/{order_id}", response_model=Order)
 def get_order(order_id: str):
